@@ -18,7 +18,8 @@
 const stm32f4_gpio_config stm32f4_start_config_gpio [] = {
 #ifdef STM32F4_FAMILY_F4XXXX
   #ifdef STM32F4_ENABLE_USART_1
-    STM32F4_PIN_USART1_TX_PA9,
+    //STM32F4_PIN_USART1_TX_PA9,
+    STM32F4_PIN_USART1_TX_PB6,
     STM32F4_PIN_USART1_RX_PA10,
   #endif
   #ifdef STM32F4_ENABLE_USART_2
