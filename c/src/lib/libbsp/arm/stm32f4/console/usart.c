@@ -26,7 +26,7 @@ static volatile stm32f4_usart *usart_get_regs(const console_tbl *ct)
   return (stm32f4_usart *) ct->ulCtrlPort1;
 }
 
-#if 0
+#if STM32_CONSOLE_USE_INTERRUPTS
 static rtems_vector_number usart_get_irq_number(const console_tbl *ct)
 {
   return ct->ulIntVector;
@@ -124,8 +124,6 @@ static void usart_initialize(int minor)
 {
   const console_tbl *ct = Console_Port_Tbl [minor];
   volatile stm32f4_usart *usart = usart_get_regs(ct);
-  uint32_t pclk = usart_get_pclk(ct);
-  uint32_t baud = usart_get_baud(ct);
   stm32f4_rcc_index rcc_index = usart_get_rcc_index(ct);
 
   stm32f4_rcc_set_clock(rcc_index, true);
@@ -133,11 +131,32 @@ static void usart_initialize(int minor)
   usart->cr1 = 0;
   usart->cr2 = 0;
   usart->cr3 = 0;
-  usart->bbr = usart_get_bbr(usart, pclk, baud);
-  usart->cr1 = STM32F4_USART_CR1_UE
-    | STM32F4_USART_CR1_TE
-    | STM32F4_USART_CR1_RE;
 }
+
+#if STM32_CONSOLE_USE_INTERRUPTS
+static void usart_interrupt_handler(void *arg)
+{
+  struct rtems_termios_tty *tty = arg;
+  const console_tbl *ct = Console_Port_Tbl [tty->minor];
+  console_data *cd = &Console_Port_Data [tty->minor];
+  volatile stm32f4_usart *usart = usart_get_regs(ct);
+  uint32_t sr=usart->sr, clr=0;
+
+  if(cd->bActive && (sr & STM32F4_USART_SR_TXE)) {
+      clr |= STM32F4_USART_CR1_TXEIE;
+      usart->cr1 &= ~STM32F4_USART_CR1_TXEIE;
+      rtems_termios_dequeue_characters(cd->termios_data, 1);
+  }
+
+  if(sr & (STM32F4_USART_SR_RXNE | STM32F4_USART_SR_ORE)) {
+      char c = STM32F4_USART_DR_GET(usart->dr);
+      clr |= STM32F4_USART_SR_RXNE | STM32F4_USART_SR_ORE;
+      rtems_termios_enqueue_raw_characters(cd->termios_data, &c, 1);
+  }
+
+  usart->sr = (~clr)&0x3FF;
+}
+#endif
 
 static int usart_first_open(int major, int minor, void *arg)
 {
@@ -145,17 +164,78 @@ static int usart_first_open(int major, int minor, void *arg)
   struct rtems_termios_tty *tty = (struct rtems_termios_tty *) oc->iop->data1;
   const console_tbl *ct = Console_Port_Tbl [minor];
   console_data *cd = &Console_Port_Data [minor];
+  uint32_t pclk = usart_get_pclk(ct);
+  uint32_t baud = usart_get_baud(ct);
+  volatile stm32f4_usart *usart = usart_get_regs(ct);
 
   cd->termios_data = tty;
   rtems_termios_set_initial_baud(tty, ct->ulClock);
 
-  return 0;
+  usart->bbr = usart_get_bbr(usart, pclk, baud);
+
+  usart->cr1 =
+      STM32F4_USART_CR1_UE
+      | STM32F4_USART_CR1_TE
+      | STM32F4_USART_CR1_RE;
+
+#if STM32_CONSOLE_USE_INTERRUPTS
+   rtems_interrupt_handler_install(
+      usart_get_irq_number(ct),
+      "UART",
+      RTEMS_INTERRUPT_UNIQUE,
+      usart_interrupt_handler,
+      (void *) tty
+   );
+  usart->cr1 |= STM32F4_USART_CR1_RXNEIE;
+#endif
+
+  return RTEMS_SUCCESSFUL;
 }
 
 static int usart_last_close(int major, int minor, void *arg)
 {
+  const console_tbl *ct = Console_Port_Tbl [minor];
+  volatile stm32f4_usart *usart = usart_get_regs(ct);
+#if STM32_CONSOLE_USE_INTERRUPTS
+  rtems_libio_open_close_args_t *oc = (rtems_libio_open_close_args_t *) arg;
+  struct rtems_termios_tty *tty = (struct rtems_termios_tty *) oc->iop->data1;
+#endif
+
+  usart->cr1 = 0;
+
+#if STM32_CONSOLE_USE_INTERRUPTS
+  rtems_interrupt_handler_remove(
+    usart_get_irq_number(ct),
+    usart_interrupt_handler,
+    (void *) tty
+  );
+#endif
+
+  return RTEMS_SUCCESSFUL;
+}
+
+#if STM32_CONSOLE_USE_INTERRUPTS
+static ssize_t usart_write_interrupt_driven(
+  int minor,
+  const char *buf,
+  size_t len
+)
+{
+  const console_tbl *ct = Console_Port_Tbl [minor];
+  console_data *cd = &Console_Port_Data[minor];
+  volatile stm32f4_usart *usart = usart_get_regs(ct);
+
+  if (len > 0) {
+    usart->dr = STM32F4_USART_DR(buf[0]);
+    usart->cr1 |= STM32F4_USART_CR1_TXEIE;
+    cd->bActive = true;
+  } else {
+    cd->bActive = false;
+  }
+
   return 0;
 }
+#else
 
 static int usart_read_polled(int minor)
 {
@@ -195,20 +275,27 @@ static ssize_t usart_write_support_polled(
 
   return n;
 }
+#endif
 
 static int usart_set_attributes(int minor, const struct termios *term)
 {
-  return -1;
+  return RTEMS_SUCCESSFUL;
 }
 
 const console_fns stm32f4_usart_fns = {
   .deviceProbe = libchip_serial_default_probe,
+  .deviceInitialize = usart_initialize,
   .deviceFirstOpen = usart_first_open,
   .deviceLastClose = usart_last_close,
-  .deviceRead = usart_read_polled,
-  .deviceWrite = usart_write_support_polled,
-  .deviceInitialize = usart_initialize,
-  .deviceWritePolled = usart_write_polled,
   .deviceSetAttributes = usart_set_attributes,
+#if STM32_CONSOLE_USE_INTERRUPTS
+  .deviceWrite = usart_write_interrupt_driven,
+  .deviceOutputUsesInterrupts = true
+#else
+  .deviceRead = usart_read_polled,
+  .deviceWritePolled = usart_write_polled,
+  .deviceWrite = usart_write_support_polled,
   .deviceOutputUsesInterrupts = false
+#endif
 };
+

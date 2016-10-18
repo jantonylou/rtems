@@ -296,7 +296,7 @@ bool stm32f4_gpio_get_input(int pin);
       .pin_last = STM32F4_GPIO_PIN(port, idx), \
       .mode = STM32F4_GPIO_MODE_AF, \
       .otype = STM32F4_GPIO_OTYPE_PUSH_PULL, \
-      .ospeed = STM32F4_GPIO_OSPEED_2_MHZ, \
+      .ospeed = STM32F4_GPIO_OSPEED_25_MHZ, \
       .pupd = STM32F4_GPIO_PULL_UP, \
       .af = altfunc \
     } \
