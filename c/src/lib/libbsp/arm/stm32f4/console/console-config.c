@@ -112,6 +112,6 @@ BSP_output_char_function_type BSP_output_char = output_char;
 BSP_polling_getchar_function_type BSP_poll_char = NULL;
 
 void bsp_console_select(void) {
-    Console_Port_Minor = 1;
+    Console_Port_Minor = 0;
 }
 
